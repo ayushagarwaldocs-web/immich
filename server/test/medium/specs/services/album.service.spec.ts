@@ -1,7 +1,9 @@
 import { Kysely } from 'kysely';
+import { AlbumUserRole } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
+import { DatabaseRepository } from 'src/repositories/database.repository.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
 import { ResourceRepository } from 'src/repositories/resource.repository.js';
 import { UserRepository } from 'src/repositories/user.repository.js';
@@ -18,7 +20,7 @@ let defaultDatabase: Kysely<DB>;
 const setup = (db?: Kysely<DB>) => {
   return newMediumService(AlbumService, {
     database: db || defaultDatabase,
-    real: [AccessRepository, AlbumRepository, AssetRepository, UserRepository],
+    real: [AccessRepository, AlbumRepository, AssetRepository, DatabaseRepository, UserRepository],
     mock: [LoggingRepository, ResourceRepository],
   });
 };
@@ -42,6 +44,99 @@ describe(AlbumService.name, () => {
       expect(userIds.toSorted()).toEqual([owner.id, sharedWith.id].toSorted());
       expect(userIds).not.toContain(stranger.id);
       expect(changed).toEqual([Resource.album(album)]);
+    });
+
+    it('should move an album and keep its parent when parentId is omitted', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const auth = factory.auth({ user });
+      const { album: parent } = await ctx.newAlbum({ ownerId: user.id });
+      const { album } = await ctx.newAlbum({ ownerId: user.id });
+
+      await expect(sut.update(auth, album.id, { parentId: parent.id })).resolves.toMatchObject({ parentId: parent.id });
+      await expect(sut.update(auth, album.id, { albumName: 'Japan' })).resolves.toMatchObject({
+        albumName: 'Japan',
+        parentId: parent.id,
+      });
+      await expect(sut.update(auth, album.id, { parentId: null })).resolves.toMatchObject({ parentId: null });
+    });
+
+    it('should not move an album into one of its descendants', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const { album: a } = await ctx.newAlbum({ ownerId: user.id });
+      const { album: b } = await ctx.newAlbum({ ownerId: user.id, parentId: a.id });
+      const { album: c } = await ctx.newAlbum({ ownerId: user.id, parentId: b.id });
+
+      await expect(sut.update(factory.auth({ user }), a.id, { parentId: c.id })).rejects.toThrow(
+        'Cannot move an album into itself or one of its sub-albums',
+      );
+
+      await expect(ctx.get(AlbumRepository).getById(a.id)).resolves.toMatchObject({ parentId: null });
+    });
+
+    it('should not create a cycle from concurrent moves', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const auth = factory.auth({ user });
+      const { album: a } = await ctx.newAlbum({ ownerId: user.id });
+      const { album: b } = await ctx.newAlbum({ ownerId: user.id });
+
+      const results = await Promise.allSettled([
+        sut.update(auth, a.id, { parentId: b.id }),
+        sut.update(auth, b.id, { parentId: a.id }),
+      ]);
+
+      expect(results.map(({ status }) => status).toSorted()).toEqual(['fulfilled', 'rejected']);
+    });
+
+    it('should not move an album into an album of another user', async () => {
+      const { sut, ctx } = setup();
+      const { album: parent, sharedWith } = await ctx.newSharedAlbum();
+      const { album } = await ctx.newAlbum({ ownerId: sharedWith.id });
+
+      await expect(sut.update(factory.auth({ user: sharedWith }), album.id, { parentId: parent.id })).rejects.toThrow(
+        'Not found or no album.delete access',
+      );
+    });
+  });
+
+  describe('delete', () => {
+    it('should move the sub-albums to the parent album and tell their users', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const { user: viewer } = await ctx.newUser();
+      const { album: a } = await ctx.newAlbum({ ownerId: user.id });
+      const { album: b } = await ctx.newAlbum({ ownerId: user.id, parentId: a.id });
+      const { album: c } = await ctx.newAlbum({ ownerId: user.id, parentId: b.id });
+      const { album: d } = await ctx.newAlbum({ ownerId: user.id, parentId: b.id });
+      await ctx.newAlbumUser({ albumId: d.id, userId: viewer.id, role: AlbumUserRole.Viewer });
+
+      await sut.delete(factory.auth({ user }), b.id);
+
+      const albumRepository = ctx.get(AlbumRepository);
+      await expect(albumRepository.getById(b.id)).resolves.toBeUndefined();
+      await expect(albumRepository.getById(c.id)).resolves.toMatchObject({ parentId: a.id });
+      await expect(albumRepository.getById(d.id)).resolves.toMatchObject({ parentId: a.id });
+
+      const events = ctx.getMock(ResourceRepository).send.mock.calls.map(([event]) => event);
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { userIds: [user.id], changed: [Resource.album(c)] },
+          { userIds: expect.arrayContaining([user.id, viewer.id]), changed: [Resource.album(d)] },
+        ]),
+      );
+    });
+
+    it('should move the sub-albums of a top-level album to the top level', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const { album: a } = await ctx.newAlbum({ ownerId: user.id });
+      const { album: b } = await ctx.newAlbum({ ownerId: user.id, parentId: a.id });
+
+      await sut.delete(factory.auth({ user }), a.id);
+
+      await expect(ctx.get(AlbumRepository).getById(b.id)).resolves.toMatchObject({ parentId: null });
     });
   });
 

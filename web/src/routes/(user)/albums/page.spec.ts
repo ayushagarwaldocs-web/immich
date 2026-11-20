@@ -74,3 +74,60 @@ test('sidebar left open closes again when a narrow page renders', async ({ rende
   expect(sidebarStore.isOpen).toBe(false);
   await page.viewport(1280, 720);
 });
+
+test('lists only top-level albums with their sub-album count', async ({ data, render, app }) => {
+  const travel = factory.album({ albumName: 'Travel' });
+  data.addAlbums([
+    travel,
+    factory.album({ albumName: 'Japan', parentId: travel.id }),
+    factory.album({ albumName: 'Italy', parentId: travel.id }),
+    factory.album({ albumName: 'Family' }),
+  ]);
+
+  await render(Page, load);
+
+  await expect.element(app.albums.card('Travel').getByText('sub_albums_count', { exact: true })).toBeVisible();
+  await expect
+    .element(app.albums.card('Family').getByText('sub_albums_count', { exact: true }))
+    .not.toBeInTheDocument();
+  await expect.element(app.albums.card('Japan')).not.toBeInTheDocument();
+  await expect.element(app.albums.card('Italy')).not.toBeInTheDocument();
+});
+
+test('lists a shared sub-album at the top level when its parent is not visible', async ({ data, render, app }) => {
+  const owner = factory.user();
+  data.addAlbums(
+    factory.album({
+      albumName: 'Shared trip',
+      parentId: crypto.randomUUID(),
+      albumUsers: factory.albumUsers({ owner, viewers: [data.user] }),
+    }),
+  );
+
+  await render(Page, load);
+
+  await expect.element(app.albums.card('Shared trip')).toBeVisible();
+});
+
+test('searching finds sub-albums', async ({ data, render, app }) => {
+  const travel = factory.album({ albumName: 'Travel' });
+  data.addAlbums([travel, factory.album({ albumName: 'Japan', parentId: travel.id })]);
+
+  await render(Page, load);
+  await app.albums.searchInput.fill('jap');
+
+  await expect.element(app.albums.card('Japan')).toBeVisible();
+  await expect.element(app.albums.card('Travel')).not.toBeInTheDocument();
+});
+
+test('keeps an empty unnamed album that has sub-albums', async ({ data, render, settle, api }) => {
+  const parent = factory.album({ albumName: '' });
+  const empty = factory.album({ albumName: '' });
+  data.addAlbums([parent, empty, factory.album({ albumName: 'Child', parentId: parent.id })]);
+
+  await render(Page, load);
+  await settle();
+
+  expect(api.deleteAlbum).toHaveBeenCalledWith({ params: { id: empty.id } });
+  expect(api.deleteAlbum.calls).toHaveLength(1);
+});

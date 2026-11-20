@@ -1041,6 +1041,7 @@ export enum DatabaseLock {
   HlsSessionCleanup = 850,
   FacialRecognition = 900,
   DuplicateDetection = 1000,
+  AlbumHierarchy = 1100,
 }
 
 export enum MaintenanceAction {

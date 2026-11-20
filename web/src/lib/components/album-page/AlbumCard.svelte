@@ -13,6 +13,8 @@
     showItemCount?: boolean;
     preload?: boolean;
     contextMenuItems?: MenuItems;
+    subAlbumCount?: number;
+    coverAssetId?: string | null;
   };
 
   const {
@@ -22,6 +24,8 @@
     showItemCount = false,
     preload = false,
     contextMenuItems,
+    subAlbumCount = 0,
+    coverAssetId,
   }: Props = $props();
 
   const owner = $derived(album.albumUsers[0].user);
@@ -47,7 +51,13 @@
     </div>
   {/if}
 
-  <AlbumCover {album} {preload} class="transition-all duration-300 hover:shadow-lg" />
+  <AlbumCover
+    {album}
+    {preload}
+    {coverAssetId}
+    isFolder={subAlbumCount > 0}
+    class="transition-all duration-300 hover:shadow-lg"
+  />
 
   <div class="mt-4">
     <p
@@ -87,5 +97,11 @@
         <p>{$t('shared')}</p>
       {/if}
     </span>
+
+    {#if subAlbumCount > 0}
+      <p class="flex text-sm dark:text-immich-dark-fg" data-testid="album-sub-albums">
+        {$t('sub_albums_count', { values: { count: subAlbumCount } })}
+      </p>
+    {/if}
   </div>
 </div>

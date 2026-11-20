@@ -2,10 +2,10 @@ import { Injectable } from '@nestjs/common';
 import { sql, type ExpressionBuilder, type Insertable, type Kysely, type Updateable } from 'kysely';
 import { jsonArrayFrom, jsonObjectFrom } from 'kysely/helpers/postgres';
 import { InjectKysely } from 'nestjs-kysely';
-import { columns } from 'src/database.js';
+import { columns, type TransactionHandle } from 'src/database.js';
 import { Chunked, ChunkedArray, ChunkedSet, DummyValue, GenerateSql } from 'src/decorators.js';
 import { AlbumUserCreateDto, MapAlbumDto } from 'src/dtos/album.dto.js';
-import { AlbumUserRole } from 'src/enum.js';
+import { AlbumUserRole, DatabaseLock } from 'src/enum.js';
 import { DB } from 'src/schema/index.js';
 import { AlbumTable } from 'src/schema/tables/album.table.js';
 import { asUuid, dummy, withDefaultVisibility } from 'src/utils/database.js';
@@ -332,8 +332,8 @@ export class AlbumRepository {
     return result;
   }
 
-  update(id: string, album: Updateable<AlbumTable>, authUserId: string) {
-    return this.db
+  update(id: string, album: Updateable<AlbumTable>, authUserId: string, trx?: TransactionHandle) {
+    return (trx?.unwrap() ?? this.db)
       .updateTable('album')
       .set(album)
       .where('album.id', '=', id)
@@ -343,8 +343,57 @@ export class AlbumRepository {
       .executeTakeFirstOrThrow();
   }
 
-  async delete(id: string): Promise<void> {
-    await this.db.deleteFrom('album').where('id', '=', id).execute();
+  async delete(id: string, trx?: TransactionHandle): Promise<void> {
+    await (trx?.unwrap() ?? this.db).deleteFrom('album').where('id', '=', id).execute();
+  }
+
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.TRANSACTION] })
+  async lockHierarchy(ownerId: string, trx: TransactionHandle): Promise<void> {
+    await sql`SELECT pg_advisory_xact_lock(${DatabaseLock.AlbumHierarchy}, hashtext(${ownerId}))`.execute(trx.unwrap());
+  }
+
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.TRANSACTION] })
+  async getLineageIds(id: string, trx?: TransactionHandle): Promise<string[]> {
+    const rows = await (trx?.unwrap() ?? this.db)
+      .withRecursive('lineage(id, parentId)', (qb) => {
+        const album = qb
+          .selectFrom('album')
+          .select(['album.id', 'album.parentId'])
+          .where('album.id', '=', id)
+          .where('album.deletedAt', 'is', null);
+
+        const ancestors = qb
+          .selectFrom('album')
+          .innerJoin('lineage', 'lineage.parentId', 'album.id')
+          .select(['album.id', 'album.parentId']);
+
+        return album.union(ancestors);
+      })
+      .selectFrom('lineage')
+      .select('lineage.id')
+      .execute();
+
+    return rows.map((row) => row.id);
+  }
+
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.TRANSACTION] })
+  reparentChildren(id: string, trx?: TransactionHandle) {
+    return (trx?.unwrap() ?? this.db)
+      .with('child', (qb) =>
+        qb
+          .updateTable('album')
+          .from('album as parent')
+          .set((eb) => ({ parentId: eb.ref('parent.parentId') }))
+          .where('parent.id', '=', id)
+          .whereRef('album.parentId', '=', 'parent.id')
+          .returning('album.id'),
+      )
+      .selectFrom('child')
+      .innerJoin('album_user', 'album_user.albumId', 'child.id')
+      .select('child.id')
+      .select((eb) => eb.fn<string[]>('array_agg', ['album_user.userId']).as('userIds'))
+      .groupBy('child.id')
+      .execute();
   }
 
   @Chunked({ chunkSize: 30_000 })

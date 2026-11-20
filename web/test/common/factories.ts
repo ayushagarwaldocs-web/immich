@@ -219,6 +219,7 @@ const album = ({
     isActivityEnabled: true,
     shared: members.length > 1,
     order: AssetOrder.Desc,
+    parentId: null,
     ...overrides,
   };
 };

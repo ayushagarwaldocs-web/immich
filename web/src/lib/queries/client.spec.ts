@@ -1,3 +1,4 @@
+import { deleteAlbumsMutation, getAlbumInfoQuery } from '#lib/queries/album.query.ts';
 import { executeMutation, queryClient } from '#lib/queries/client.ts';
 import { getAdminConfigQuery } from '#lib/queries/config-admin.query.ts';
 import { getPublicConfigQuery } from '#lib/queries/config-public.query.ts';
@@ -95,5 +96,31 @@ describe('executeMutation', () => {
 
     expect(api.deleteTag).not.toHaveBeenCalled();
     expect(onSuccess).not.toHaveBeenCalled();
+  });
+
+  test('removes successfully deleted album details when a later deletion fails', async ({ data, api, logger }) => {
+    const first = factory.album();
+    const second = factory.album();
+    data.addAlbums([first, second]);
+    queryClient.setQueryData(getAlbumInfoQuery(first.id).queryKey, first);
+    queryClient.setQueryData(getAlbumInfoQuery(second.id).queryKey, second);
+    api.on({
+      deleteAlbum: ({ params }) => {
+        if (params.id === second.id) {
+          return { status: 500 };
+        }
+
+        data.deleteAlbum(params.id);
+        return { status: 204 };
+      },
+    });
+
+    await executeMutation(deleteAlbumsMutation, [first.id, second.id]);
+
+    expect(api.deleteAlbum).toHaveBeenCalledWith({ params: { id: first.id } });
+    expect(api.deleteAlbum).toHaveBeenCalledWith({ params: { id: second.id } });
+    expect(logger.error).toHaveBeenCalledWith(/handleError/);
+    expect(queryClient.getQueryData(getAlbumInfoQuery(first.id).queryKey)).toBeUndefined();
+    expect(queryClient.getQueryData(getAlbumInfoQuery(second.id).queryKey)).toEqual(second);
   });
 });

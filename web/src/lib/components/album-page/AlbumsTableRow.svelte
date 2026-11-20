@@ -13,14 +13,15 @@
 
   type Props = {
     album: AlbumResponseDto;
+    subAlbumCount?: number;
   };
 
-  const { album }: Props = $props();
+  const { album, subAlbumCount = 0 }: Props = $props();
 
   let contextMenuAnchor: HTMLDivElement | undefined = $state();
   const items = $derived.by(() => {
-    const { Edit, Share, Download, Leave, Delete } = getAlbumActions($t, album);
-    return [Edit, Share, Download, Leave, Delete];
+    const { Edit, Share, CreateSubAlbum, Move, Download, Leave, Delete } = getAlbumActions($t, album);
+    return [Edit, Share, CreateSubAlbum, Move, Download, Leave, Delete];
   });
 
   const dateLocaleString = (dateString: string) => {
@@ -59,6 +60,9 @@
               values: { user: album.albumUsers[0].user.name },
             })}
       />
+    {/if}
+    {#if subAlbumCount > 0}
+      <span class="ms-2 text-sm opacity-70">{$t('sub_albums_count', { values: { count: subAlbumCount } })}</span>
     {/if}
   </td>
   <td class="text-md text-center text-ellipsis sm:w-2/12 md:w-2/12 xl:w-[15%] 2xl:w-[12%]">

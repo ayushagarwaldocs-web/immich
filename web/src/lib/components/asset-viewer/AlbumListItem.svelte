@@ -11,6 +11,7 @@
 
   interface Props {
     album: AlbumResponseDto;
+    parentPath?: string;
     searchQuery?: string;
     selected: boolean;
     multiSelected?: boolean;
@@ -20,6 +21,7 @@
 
   let {
     album,
+    parentPath,
     searchQuery = '',
     selected = false,
     multiSelected = false,
@@ -146,6 +148,9 @@
     </span>
     <span class="flex h-full flex-col items-start justify-center overflow-hidden">
       <span class="w-full shrink truncate">{albumNameArray[0]}<b>{albumNameArray[1]}</b>{albumNameArray[2]}</span>
+      {#if parentPath}
+        <span class="w-full truncate text-xs text-gray-600 dark:text-gray-400" title={parentPath}>{parentPath}</span>
+      {/if}
       <span class="flex gap-1 text-sm">
         <AlbumListItemDetails {album} />
       </span>

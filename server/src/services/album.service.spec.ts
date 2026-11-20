@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import { TransactionHandle } from 'src/database.js';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto.js';
 import { AlbumUserRole, AssetOrder, UserMetadataKey } from 'src/enum.js';
 import { Resource } from 'src/resource-paths.js';
@@ -16,11 +17,20 @@ import { ServiceMocks, expectResourceEvents, newTestService } from 'test/utils.j
 describe(AlbumService.name, () => {
   let sut: AlbumService;
   let mocks: ServiceMocks;
+  let trx: TransactionHandle;
 
   beforeEach(() => {
     ({ sut, mocks } = newTestService(AlbumService));
+    trx = { commit: vitest.fn(), [Symbol.asyncDispose]: vitest.fn() } as unknown as TransactionHandle;
+    mocks.database.transaction.mockResolvedValue(trx);
     mocks.album.getMetadataForIds.mockResolvedValue([]);
+    mocks.album.reparentChildren.mockResolvedValue([]);
   });
+
+  const ownAlbums = (...albumIds: string[]) =>
+    mocks.access.album.checkOwnerAccess.mockImplementation((_userId, ids) =>
+      Promise.resolve(ids.intersection(new Set(albumIds))),
+    );
 
   it('should work', () => {
     expect(sut).toBeDefined();
@@ -387,6 +397,38 @@ describe(AlbumService.name, () => {
         auth.user.id,
       );
     });
+
+    it('should create an album inside an owned parent album', async () => {
+      const parent = AlbumFactory.create();
+      const album = AlbumFactory.create({ parentId: parent.id });
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([parent.id]));
+      mocks.album.create.mockResolvedValue(getForAlbum(album));
+      mocks.user.getMetadata.mockResolvedValue([]);
+
+      const result = await sut.create(AuthFactory.create(owner), { albumName: 'Japan', parentId: parent.id });
+
+      expect(result.parentId).toBe(parent.id);
+      expect(mocks.access.album.checkOwnerAccess).toHaveBeenCalledWith(owner.id, new Set([parent.id]));
+      expect(mocks.album.create).toHaveBeenCalledWith(
+        expect.objectContaining({ albumName: 'Japan', parentId: parent.id }),
+        [],
+        [{ userId: owner.id, role: AlbumUserRole.Owner }],
+        owner.id,
+      );
+    });
+
+    it('should not create an album inside a parent album the user does not own', async () => {
+      const parent = AlbumFactory.create();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set());
+
+      await expect(sut.create(AuthFactory.create(), { albumName: 'Japan', parentId: parent.id })).rejects.toThrow(
+        'Not found or no album.delete access',
+      );
+
+      expect(mocks.album.create).not.toHaveBeenCalled();
+      expect(mocks.resource.send).not.toHaveBeenCalled();
+    });
   });
 
   describe('update', () => {
@@ -443,7 +485,9 @@ describe(AlbumService.name, () => {
         album.id,
         { id: album.id, albumName: 'new album name' },
         owner.id,
+        trx,
       );
+      expect(trx.commit).toHaveBeenCalledTimes(1);
     });
 
     it('should tell the shared users when the owner changes the album', async () => {
@@ -457,6 +501,139 @@ describe(AlbumService.name, () => {
       await sut.update(AuthFactory.create(owner), album.id, { albumName: 'new album name' });
 
       expectResourceEvents(mocks, { userIds: [owner.id, viewer.id], changed: [Resource.album(album)] });
+    });
+
+    it('should let an editor rename the album', async () => {
+      const editor = UserFactory.create();
+      const album = AlbumFactory.from().albumUser({ userId: editor.id, role: AlbumUserRole.Editor }).build();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set());
+      mocks.access.album.checkSharedAlbumAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.album.update.mockResolvedValue(getForAlbum(album));
+
+      await sut.update(AuthFactory.create(editor), album.id, { albumName: 'new album name' });
+
+      expect(mocks.album.update).toHaveBeenCalledWith(
+        album.id,
+        { id: album.id, albumName: 'new album name' },
+        editor.id,
+        trx,
+      );
+      expect(mocks.album.lockHierarchy).not.toHaveBeenCalled();
+    });
+
+    it('should move the album into another owned album', async () => {
+      const viewer = UserFactory.create();
+      const album = AlbumFactory.from().albumUser({ userId: viewer.id, role: AlbumUserRole.Viewer }).build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const parent = AlbumFactory.create();
+      ownAlbums(album.id, parent.id);
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.album.getLineageIds.mockResolvedValue([parent.id]);
+      mocks.album.update.mockResolvedValue(getForAlbum({ ...album, parentId: parent.id }));
+
+      const result = await sut.update(AuthFactory.create(owner), album.id, { parentId: parent.id });
+
+      expect(result.parentId).toBe(parent.id);
+      expect(mocks.access.album.checkOwnerAccess).toHaveBeenCalledWith(owner.id, new Set([album.id, parent.id]));
+      expect(mocks.album.lockHierarchy).toHaveBeenCalledWith(owner.id, trx);
+      expect(mocks.album.getLineageIds).toHaveBeenCalledWith(parent.id, trx);
+      expect(mocks.album.update).toHaveBeenCalledWith(album.id, { id: album.id, parentId: parent.id }, owner.id, trx);
+      expect(trx.commit).toHaveBeenCalledTimes(1);
+      expectResourceEvents(mocks, { userIds: [owner.id, viewer.id], changed: [Resource.album(album)] });
+    });
+
+    it('should move the album to the top level', async () => {
+      const album = AlbumFactory.create({ parentId: newUuid() });
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.album.update.mockResolvedValue(getForAlbum({ ...album, parentId: null }));
+
+      const result = await sut.update(AuthFactory.create(owner), album.id, { parentId: null });
+
+      expect(result.parentId).toBeNull();
+      expect(mocks.access.album.checkOwnerAccess).toHaveBeenCalledWith(owner.id, new Set([album.id]));
+      expect(mocks.album.lockHierarchy).not.toHaveBeenCalled();
+      expect(mocks.album.update).toHaveBeenCalledWith(album.id, { id: album.id, parentId: null }, owner.id, trx);
+    });
+
+    it('should not let an editor move the album', async () => {
+      const editor = UserFactory.create();
+      const parent = AlbumFactory.create();
+      const album = AlbumFactory.from().albumUser({ userId: editor.id, role: AlbumUserRole.Editor }).build();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set());
+      mocks.access.album.checkSharedAlbumAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+
+      await expect(sut.update(AuthFactory.create(editor), album.id, { parentId: parent.id })).rejects.toThrow(
+        'Not found or no album.delete access',
+      );
+
+      expect(mocks.album.update).not.toHaveBeenCalled();
+      expect(mocks.resource.send).not.toHaveBeenCalled();
+    });
+
+    it('should not move the album into a parent album the user does not own', async () => {
+      const parent = AlbumFactory.create();
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+
+      await expect(sut.update(AuthFactory.create(owner), album.id, { parentId: parent.id })).rejects.toThrow(
+        'Not found or no album.delete access',
+      );
+
+      expect(mocks.album.update).not.toHaveBeenCalled();
+    });
+
+    it('should not move the album into itself', async () => {
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.album.getLineageIds.mockResolvedValue([album.id]);
+
+      await expect(sut.update(AuthFactory.create(owner), album.id, { parentId: album.id })).rejects.toThrow(
+        'Cannot move an album into itself or one of its sub-albums',
+      );
+
+      expect(mocks.album.update).not.toHaveBeenCalled();
+      expect(trx.commit).not.toHaveBeenCalled();
+    });
+
+    it('should not move the album into one of its sub-albums', async () => {
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const child = AlbumFactory.create({ parentId: album.id });
+      const grandchild = AlbumFactory.create({ parentId: child.id });
+      ownAlbums(album.id, grandchild.id);
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.album.getLineageIds.mockResolvedValue([grandchild.id, child.id, album.id]);
+
+      await expect(sut.update(AuthFactory.create(owner), album.id, { parentId: grandchild.id })).rejects.toThrow(
+        'Cannot move an album into itself or one of its sub-albums',
+      );
+
+      expect(mocks.album.lockHierarchy).toHaveBeenCalledWith(owner.id, trx);
+      expect(mocks.album.update).not.toHaveBeenCalled();
+      expect(mocks.resource.send).not.toHaveBeenCalled();
+    });
+
+    it('should not move the album into a parent album that was deleted meanwhile', async () => {
+      const parent = AlbumFactory.create();
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      ownAlbums(album.id, parent.id);
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.album.getLineageIds.mockResolvedValue([]);
+
+      await expect(sut.update(AuthFactory.create(owner), album.id, { parentId: parent.id })).rejects.toThrow(
+        'Parent album not found',
+      );
+
+      expect(mocks.album.update).not.toHaveBeenCalled();
     });
   });
 
@@ -492,7 +669,34 @@ describe(AlbumService.name, () => {
       await sut.delete(AuthFactory.create(owner), album.id);
 
       expect(mocks.album.delete).toHaveBeenCalledTimes(1);
-      expect(mocks.album.delete).toHaveBeenCalledWith(album.id);
+      expect(mocks.album.delete).toHaveBeenCalledWith(album.id, trx);
+      expect(trx.commit).toHaveBeenCalledTimes(1);
+    });
+
+    it('should move the sub-albums up and tell their users', async () => {
+      const viewer = UserFactory.create();
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const [first, second, third] = [newUuid(), newUuid(), newUuid()];
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.album.reparentChildren.mockResolvedValue([
+        { id: first, userIds: [owner.id] },
+        { id: second, userIds: [owner.id, viewer.id] },
+        { id: third, userIds: [viewer.id, owner.id] },
+      ]);
+
+      await sut.delete(AuthFactory.create(owner), album.id);
+
+      expect(mocks.album.lockHierarchy).toHaveBeenCalledWith(owner.id, trx);
+      expect(mocks.album.reparentChildren).toHaveBeenCalledWith(album.id, trx);
+      expect(mocks.album.delete).toHaveBeenCalledWith(album.id, trx);
+      expectResourceEvents(
+        mocks,
+        { userIds: [owner.id], changed: [Resource.albumStatistics()], deleted: [Resource.album(album)] },
+        { userIds: [owner.id], changed: [Resource.album({ id: first })] },
+        { userIds: [owner.id, viewer.id], changed: [Resource.album({ id: second }), Resource.album({ id: third })] },
+      );
     });
 
     it('should tell every album user and the shared link owners', async () => {

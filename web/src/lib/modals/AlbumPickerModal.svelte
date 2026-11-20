@@ -8,6 +8,7 @@
   import { createAlbumMutation, getAllAlbumsQuery, getRecentAlbumsQuery } from '#lib/queries/album.query.ts';
   import { executeMutation, queryClient } from '#lib/queries/client.ts';
   import { albumViewSettings } from '#lib/stores/preferences.store.ts';
+  import { AlbumTree } from '#lib/utils/album-tree.ts';
   import { type AlbumResponseDto } from '@immich/sdk';
   import { Button, Icon, Modal, ModalBody, ModalFooter, Text } from '@immich/ui';
   import { mdiKeyboardReturn } from '@mdi/js';
@@ -23,6 +24,11 @@
 
   const albums = $derived(queries.albums.data ?? []);
   const recentAlbums = $derived(queries.recentAlbums.data ?? []);
+  const albumTree = $derived(new AlbumTree(albums));
+  const getParentPath = (album: AlbumResponseDto) => {
+    const parent = albumTree.getParent(album);
+    return parent && albumTree.getPathLabel(parent, ({ albumName }) => albumName || $t('unnamed_album'));
+  };
   const loading = $derived(queries.albums.isPending);
   let search = $state('');
   let selectedRowIndex: number = $state(-1);
@@ -192,6 +198,7 @@
             {:else if row.type === AlbumModalRowType.ALBUM_ITEM && row.album}
               <AlbumListItem
                 album={row.album}
+                parentPath={getParentPath(row.album)}
                 selected={row.selected || false}
                 multiSelected={row.multiSelected}
                 searchQuery={search}

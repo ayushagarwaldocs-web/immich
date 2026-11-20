@@ -390,6 +390,57 @@ select
 from
   "album"
 
+-- AlbumRepository.lockHierarchy
+SELECT
+  pg_advisory_xact_lock($1, hashtext ($2))
+
+-- AlbumRepository.getLineageIds
+with recursive
+  "lineage" ("id", "parentId") as (
+    select
+      "album"."id",
+      "album"."parentId"
+    from
+      "album"
+    where
+      "album"."id" = $1
+      and "album"."deletedAt" is null
+    union
+    select
+      "album"."id",
+      "album"."parentId"
+    from
+      "album"
+      inner join "lineage" on "lineage"."parentId" = "album"."id"
+  )
+select
+  "lineage"."id"
+from
+  "lineage"
+
+-- AlbumRepository.reparentChildren
+with
+  "child" as (
+    update "album"
+    set
+      "parentId" = "parent"."parentId"
+    from
+      "album" as "parent"
+    where
+      "parent"."id" = $1
+      and "album"."parentId" = "parent"."id"
+    returning
+      "album"."id"
+  )
+select
+  "child"."id",
+  array_agg("album_user"."userId") as "userIds"
+from
+  "child"
+  inner join "album_user" on "album_user"."albumId" = "child"."id"
+group by
+  "child"."id"
+
 -- AlbumRepository.getContributorCounts
 select
   "asset"."ownerId" as "userId",

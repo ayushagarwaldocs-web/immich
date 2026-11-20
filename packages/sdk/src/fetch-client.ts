@@ -932,6 +932,8 @@ export type AlbumResponseDto = {
     /** Last modified asset timestamp */
     lastModifiedAssetTimestamp?: string;
     order?: AssetOrder;
+    /** Parent album ID */
+    parentId?: string | null;
     /** Is shared album */
     shared: boolean;
     /** UTC representation of (local) start date (earliest asset) */
@@ -953,6 +955,8 @@ export type CreateAlbumDto = {
     assetIds?: string[];
     /** Album description */
     description?: string | null;
+    /** Parent album ID */
+    parentId?: string | null;
 };
 export type AlbumsAddAssetsDto = {
     /** Album IDs */
@@ -983,6 +987,8 @@ export type UpdateAlbumDto = {
     /** Enable activity feed */
     isActivityEnabled?: boolean;
     order?: AssetOrder;
+    /** Parent album ID, or null to move the album to the top level */
+    parentId?: string | null;
 };
 export type BulkIdsDto = {
     /** IDs to process */

@@ -1,20 +1,25 @@
 import { authManager } from '#lib/managers/auth-manager.svelte.ts';
 import type { TimelineAsset } from '#lib/managers/timeline-manager/types.ts';
 import AddUsersModal from '#lib/modals/AddUsersModal.svelte';
+import AlbumDeleteModal from '#lib/modals/AlbumDeleteModal.svelte';
 import AlbumEditModal from '#lib/modals/AlbumEditModal.svelte';
+import AlbumMoveModal from '#lib/modals/AlbumMoveModal.svelte';
 import AlbumOptionsModal from '#lib/modals/AlbumOptionsModal.svelte';
 import SharedLinkCreateModal from '#lib/modals/SharedLinkCreateModal.svelte';
 import {
   addAssetsToAlbumsMutation,
   addUsersToAlbumMutation,
   deleteAlbumMutation,
+  deleteAlbumsMutation,
+  getAllAlbumsQuery,
   removeUserFromAlbumMutation,
   updateAlbumInfoMutation,
   updateAlbumUserMutation,
 } from '#lib/queries/album.query.ts';
-import { executeMutation } from '#lib/queries/client.ts';
+import { executeMutation, queryClient } from '#lib/queries/client.ts';
 import { Route } from '#lib/route.ts';
-import { createAlbumAndRedirect } from '#lib/utils/album-utils.ts';
+import { AlbumTree } from '#lib/utils/album-tree.ts';
+import { createAlbumAndRedirect, createSubAlbumAndRedirect } from '#lib/utils/album-utils.ts';
 import { downloadArchive } from '#lib/utils/asset-utils.ts';
 import { openFileUploadDialog } from '#lib/utils/file-uploader.ts';
 import { getFormatter } from '#lib/utils/i18n.ts';
@@ -24,6 +29,8 @@ import {
   mdiCogOutline,
   mdiDownload,
   mdiExitToApp,
+  mdiFolderMoveOutline,
+  mdiFolderPlusOutline,
   mdiImageOutline,
   mdiLink,
   mdiPlus,
@@ -33,6 +40,7 @@ import {
   mdiTrashCanOutline,
   mdiUpload,
 } from '@mdi/js';
+import type { MutationMeta } from '@tanstack/svelte-query';
 import { type MessageFormatter } from 'svelte-i18n';
 import { goto } from '$app/navigation';
 import { page } from '$app/state';
@@ -75,6 +83,13 @@ export const getAlbumActions = ($t: MessageFormatter, album: AlbumResponseDto) =
     onAction: () => modalManager.show(SharedLinkCreateModal, { albumId: album.id }),
   };
 
+  const CreateSubAlbum: ActionItem = {
+    title: $t('new_sub_album'),
+    icon: mdiFolderPlusOutline,
+    $if: () => isOwned,
+    onAction: () => createSubAlbumAndRedirect(album.id),
+  };
+
   const Delete: ActionItem = {
     title: $t('delete_album'),
     icon: mdiTrashCanOutline,
@@ -103,6 +118,13 @@ export const getAlbumActions = ($t: MessageFormatter, album: AlbumResponseDto) =
     onAction: () => handleLeaveAlbum(album),
   };
 
+  const Move: ActionItem = {
+    title: $t('move_album'),
+    icon: mdiFolderMoveOutline,
+    $if: () => isOwned,
+    onAction: () => handleMoveAlbum(album),
+  };
+
   const Options: ActionItem = {
     title: $t('options'),
     icon: mdiCogOutline,
@@ -117,7 +139,7 @@ export const getAlbumActions = ($t: MessageFormatter, album: AlbumResponseDto) =
     onAction: () => modalManager.show(AlbumOptionsModal, { album }),
   };
 
-  return { AddUsers, CreateSharedLink, Delete, Download, Edit, Leave, Options, Share };
+  return { AddUsers, CreateSharedLink, CreateSubAlbum, Delete, Download, Edit, Leave, Move, Options, Share };
 };
 
 export const getAlbumAssetActions = ($t: MessageFormatter, album: AlbumResponseDto, asset: { id: string }) => {
@@ -150,10 +172,16 @@ export const getAlbumAssetsActions = ($t: MessageFormatter, album: AlbumResponse
   return { AddAssets, Upload };
 };
 
-const leaveAlbumPage = (album: AlbumResponseDto) => {
-  if (page.params.albumId === album.id) {
-    void goto(Route.albums());
+const getAlbumTree = async () => new AlbumTree(await queryClient.query(getAllAlbumsQuery()));
+
+const leaveAlbumPage = async (album: AlbumResponseDto) => {
+  if (page.params.albumId !== album.id) {
+    return;
   }
+
+  const tree = await getAlbumTree();
+  const parent = tree.getParent(album);
+  await goto(parent ? Route.viewAlbum(parent) : Route.albums());
 };
 
 export const handleUpdateUserAlbumRole = ({
@@ -190,9 +218,28 @@ export const handleLeaveAlbum = async (album: AlbumResponseDto) => {
 
   await executeMutation(removeUserFromAlbumMutation, [{ id: album.id, userId: 'me' }], {
     confirm: { title: $t('leave_album'), prompt: $t('are_you_sure_to_do_this'), confirmText: $t('leave') },
-    onSuccess: () => leaveAlbumPage(album),
+    onSuccess: () => void leaveAlbumPage(album),
   });
 };
+
+const handleMoveAlbum = async (album: AlbumResponseDto) => {
+  const parentId = await modalManager.show(AlbumMoveModal, { album });
+  if (parentId === undefined || parentId === (album.parentId ?? null)) {
+    return;
+  }
+
+  await moveAlbum(album, parentId);
+};
+
+export const moveAlbum = (album: AlbumResponseDto, parentId: string | null) =>
+  executeMutation(
+    () =>
+      updateAlbumInfoMutation({
+        success: { toast: 'album_moved' },
+        error: { toast: 'errors.unable_to_move_album' },
+      }),
+    [{ id: album.id, updateAlbumDto: { parentId } }],
+  );
 
 const handleUpdateThumbnail = (album: AlbumResponseDto, assetId: string) =>
   executeMutation(
@@ -208,22 +255,50 @@ export const handleDeleteAlbum = async (album: AlbumResponseDto, options?: { pro
   const $t = await getFormatter();
   const { prompt = true, notify = true } = options ?? {};
 
+  const meta: MutationMeta = notify
+    ? { success: { toast: true }, error: { toast: 'errors.unable_to_delete_album' } }
+    : {};
+
+  if (prompt) {
+    const tree = await getAlbumTree();
+    if (tree.getChildren(album.id).length > 0) {
+      await handleDeleteAlbumWithSubAlbums(album, tree, meta);
+      return;
+    }
+  }
+
   const confirmation =
     album.albumName.length > 0
       ? $t('album_delete_confirmation', { values: { album: album.albumName } })
       : $t('unnamed_album_delete_confirmation');
   const description = $t('album_delete_confirmation_description');
 
+  await executeMutation(() => deleteAlbumMutation(meta), [{ id: album.id }], {
+    confirm: prompt && { prompt: `${confirmation} ${description}` },
+    onSuccess: () => void leaveAlbumPage(album),
+  });
+};
+
+const handleDeleteAlbumWithSubAlbums = async (
+  album: AlbumResponseDto,
+  tree: AlbumTree<AlbumResponseDto>,
+  meta: MutationMeta,
+) => {
+  const choice = await modalManager.show(AlbumDeleteModal, {
+    album,
+    parent: tree.getParent(album),
+    subAlbumCount: tree.getChildren(album.id).length,
+    descendantCount: tree.getDescendantIds(album.id).size,
+  });
+  if (!choice) {
+    return;
+  }
+
+  const albums = choice === 'branch' ? tree.getDeletionOrder(album).filter((item) => isAlbumOwner(item)) : [album];
   await executeMutation(
-    () =>
-      deleteAlbumMutation(
-        notify ? { success: { toast: true }, error: { toast: 'errors.unable_to_delete_album' } } : {},
-      ),
-    [{ id: album.id }],
-    {
-      confirm: prompt && { prompt: `${confirmation} ${description}` },
-      onSuccess: () => leaveAlbumPage(album),
-    },
+    () => deleteAlbumsMutation(meta),
+    albums.map(({ id }) => id),
+    { onSuccess: () => void leaveAlbumPage(album) },
   );
 };
 

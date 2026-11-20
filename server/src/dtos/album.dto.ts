@@ -91,6 +91,7 @@ export const AlbumResponseSchema = z
     isActivityEnabled: z.boolean().describe('Activity feed enabled'),
     order: AssetOrderSchema.optional(),
     contributorCounts: z.array(ContributorCountResponseSchema).optional(),
+    parentId: z.uuidv4().nullable().optional().describe('Parent album ID'),
   })
   .meta({ id: 'AlbumResponseDto' });
 
@@ -132,6 +133,7 @@ export class CreateAlbumDto extends createZodDto({
     }),
   albumUsers: z.array(AlbumUserCreateSchema).optional().describe('Album users'),
   assetIds: z.array(z.uuidv4()).optional().describe('Initial asset IDs'),
+  parentId: z.uuidv4().nullish().describe('Parent album ID'),
 }) {}
 
 export class AlbumsAddAssetsDto extends createZodDto({
@@ -165,6 +167,7 @@ export class UpdateAlbumDto extends createZodDto({
   albumThumbnailAssetId: z.uuidv4().optional().describe('Album thumbnail asset ID'),
   isActivityEnabled: z.boolean().optional().describe('Enable activity feed'),
   order: AssetOrderSchema.optional(),
+  parentId: z.uuidv4().nullish().describe('Parent album ID, or null to move the album to the top level'),
 }) {}
 
 export class GetAlbumsDto extends createZodDto({
@@ -205,6 +208,7 @@ export type MapAlbumDto = {
   id: string;
   isActivityEnabled: boolean;
   order: AssetOrder;
+  parentId: string | null;
 };
 
 export const mapAlbum = (entity: MaybeDehydrated<MapAlbumDto>, { auth }: { auth?: AuthDto } = {}): AlbumResponseDto => {
@@ -248,5 +252,6 @@ export const mapAlbum = (entity: MaybeDehydrated<MapAlbumDto>, { auth }: { auth?
     assetCount: entity.assets?.length || 0,
     isActivityEnabled: entity.isActivityEnabled,
     order: entity.order,
+    parentId: auth?.sharedLink ? null : entity.parentId,
   };
 };

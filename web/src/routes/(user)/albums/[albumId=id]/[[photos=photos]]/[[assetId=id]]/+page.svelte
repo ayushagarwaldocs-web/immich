@@ -3,6 +3,8 @@
   import ActionMenuItem from '#lib/components/ActionMenuItem.svelte';
   import HeaderActionButton from '#lib/components/HeaderActionButton.svelte';
   import OnEvents from '#lib/components/OnEvents.svelte';
+  import AlbumBreadcrumbs from '#lib/components/album-page/AlbumBreadcrumbs.svelte';
+  import AlbumCardGroup from '#lib/components/album-page/AlbumCardGroup.svelte';
   import AlbumMap from '#lib/components/album-page/AlbumMap.svelte';
   import AlbumSummary from '#lib/components/album-page/AlbumSummary.svelte';
   import ActivityStatus from '#lib/components/asset-viewer/ActivityStatus.svelte';
@@ -38,6 +40,7 @@
   import {
     deleteAlbumMutation,
     getAlbumInfoQuery,
+    getAllAlbumsQuery,
     invalidateAlbum,
     updateAlbumInfoMutation,
   } from '#lib/queries/album.query.ts';
@@ -47,12 +50,14 @@
   import { getAlbumActions, getAlbumAssetsActions, isAlbumEditor, isAlbumOwner } from '#lib/services/album.service.ts';
   import { getGlobalActions } from '#lib/services/app.service.ts';
   import { getAssetBulkActions } from '#lib/services/asset.service.ts';
+  import { locale } from '#lib/stores/preferences.store.ts';
   import { SlideshowNavigation, SlideshowState, slideshowStore } from '#lib/stores/slideshow.store.ts';
   import { handlePromiseError } from '#lib/utils.ts';
+  import { AlbumTree, sortAlbumsByName } from '#lib/utils/album-tree.ts';
   import { delay } from '#lib/utils/asset-utils.ts';
   import { isAlbumsRoute, navigate, type AssetGridRouteSearchParams } from '#lib/utils/navigation.ts';
   import { AlbumUserRole, AssetVisibility, ReactionType } from '@immich/sdk';
-  import { ActionButton, CommandPaletteDefaultProvider, Icon, IconButton } from '@immich/ui';
+  import { ActionButton, Button, CommandPaletteDefaultProvider, Icon, IconButton } from '@immich/ui';
   import {
     mdiAccountEye,
     mdiAccountEyeOutline,
@@ -77,9 +82,15 @@
 
   const albumQuery = createPreloadedQuery(() => getAlbumInfoQuery(params.albumId));
   const album = $derived(albumQuery.data);
+  const albumsQuery = createPreloadedQuery(() => getAllAlbumsQuery());
+  const albumTree = $derived(new AlbumTree(albumsQuery.data));
+  const ancestors = $derived(albumTree.getAncestors(album));
+  const subAlbums = $derived(sortAlbumsByName(albumTree.getChildren(album.id), $locale));
+  const parentAlbum = $derived(albumTree.getParent(album));
+  const parentRoute = $derived(parentAlbum ? Route.viewAlbum(parentAlbum) : Route.albums());
   onResourceDelete(
     () => `/albums/${album.id}`,
-    () => void goto(Route.albums()),
+    () => void goto(parentRoute),
   );
   let viewMode: AlbumPageViewMode = $state(AlbumPageViewMode.VIEW);
   const isShared = $derived(viewMode !== AlbumPageViewMode.SELECT_ASSETS && album.albumUsers.length > 1);
@@ -141,7 +152,7 @@
       assetMultiSelectManager.clear();
       return;
     }
-    await goto(Route.albums());
+    await goto(parentRoute);
   };
 
   const refreshAlbum = () => invalidateAlbum(album.id);
@@ -218,7 +229,9 @@
   onNavigate(async ({ to, shallow, type }) => {
     if (shallow && type === 'goto') return;
 
-    if (!isAlbumsRoute(to?.route.id) && album.assetCount === 0 && !album.albumName) {
+    const isGoingToParent = !!parentAlbum && to?.params?.albumId === parentAlbum.id;
+    const isLeavingAlbum = !isAlbumsRoute(to?.route.id) || isGoingToParent;
+    if (isLeavingAlbum && album.assetCount === 0 && !album.albumName && subAlbums.length === 0) {
       await executeMutation(() => deleteAlbumMutation({}), [{ id: album.id }]);
     }
   });
@@ -321,6 +334,9 @@
           {#if viewMode !== AlbumPageViewMode.SELECT_THUMBNAIL}
             <!-- ALBUM TITLE -->
             <section class="pt-8 md:pt-24">
+              {#if ancestors.length > 0}
+                <AlbumBreadcrumbs {ancestors} />
+              {/if}
               <AlbumTitle id={album.id} albumName={album.albumName} {isEditor} />
 
               {#if album.assetCount > 0}
@@ -368,9 +384,30 @@
 
               <AlbumDescription id={album.id} {isEditor} description={album.description} />
             </section>
+
+            {#if subAlbums.length > 0}
+              <section class="mt-6" aria-labelledby="sub-albums-heading">
+                <div class="flex items-center justify-between">
+                  <h2 id="sub-albums-heading" class="text-xs uppercase dark:text-immich-dark-fg">{$t('sub_albums')}</h2>
+                  {#if isOwned}
+                    <Button
+                      size="small"
+                      variant="ghost"
+                      color="secondary"
+                      leadingIcon={mdiPlus}
+                      onclick={(event: MouseEvent) =>
+                        Actions.CreateSubAlbum.onAction({ event, action: Actions.CreateSubAlbum })}
+                    >
+                      {$t('new_sub_album')}
+                    </Button>
+                  {/if}
+                </div>
+                <AlbumCardGroup albums={subAlbums} {albumTree} tiles />
+              </section>
+            {/if}
           {/if}
 
-          {#if album.assetCount === 0}
+          {#if album.assetCount === 0 && subAlbums.length === 0}
             <section id="empty-album" class="mt-50 flex place-content-center place-items-center">
               <div class="w-75">
                 <p class="text-xs uppercase dark:text-immich-dark-fg">{$t('add_photos')}</p>
@@ -445,7 +482,7 @@
       </AssetSelectControlBar>
     {:else}
       {#if viewMode === AlbumPageViewMode.VIEW}
-        <ControlAppBar backIcon={mdiArrowLeft} onClose={() => goto(Route.albums())}>
+        <ControlAppBar backIcon={mdiArrowLeft} onClose={() => goto(parentRoute)}>
           {#snippet trailing()}
             <ActionButton action={Cast} />
 
@@ -468,6 +505,7 @@
               />
             {/if}
 
+            <ActionButton action={Actions.CreateSubAlbum} />
             <ActionButton action={Actions.Share} />
 
             {#if config.map.enabled}
@@ -509,6 +547,8 @@
                   />
                 {/if}
 
+                <ActionMenuItem action={Actions.CreateSubAlbum} />
+                <ActionMenuItem action={Actions.Move} />
                 <ActionMenuItem action={Actions.Delete} />
                 <ActionMenuItem action={Actions.Leave} />
               </ButtonContextMenu>

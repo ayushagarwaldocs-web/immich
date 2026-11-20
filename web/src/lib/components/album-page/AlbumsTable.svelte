@@ -2,12 +2,14 @@
   import AlbumTableHeader from '#lib/components/album-page/AlbumsTableHeader.svelte';
   import AlbumTableRow from '#lib/components/album-page/AlbumsTableRow.svelte';
   import { AlbumGroupBy, albumViewSettings } from '#lib/stores/preferences.store.ts';
+  import type { AlbumTree } from '#lib/utils/album-tree.ts';
   import {
     isAlbumGroupCollapsed,
     sortOptionsMetadata,
     toggleAlbumGroupCollapsing,
     type AlbumGroup,
   } from '#lib/utils/album-utils.ts';
+  import type { AlbumResponseDto } from '@immich/sdk';
   import { Icon } from '@immich/ui';
   import { mdiChevronRight } from '@mdi/js';
   import { t } from 'svelte-i18n';
@@ -16,9 +18,10 @@
   type Props = {
     groupedAlbums: AlbumGroup[];
     albumGroupOption?: string;
+    albumTree?: AlbumTree<AlbumResponseDto>;
   };
 
-  const { groupedAlbums, albumGroupOption = AlbumGroupBy.None }: Props = $props();
+  const { groupedAlbums, albumGroupOption = AlbumGroupBy.None, albumTree }: Props = $props();
 </script>
 
 <table class="mt-2 w-full text-start">
@@ -34,7 +37,7 @@
   {#if albumGroupOption === AlbumGroupBy.None}
     <tbody class="block w-full overflow-y-auto rounded-md border dark:border-immich-dark-gray dark:text-immich-dark-fg">
       {#each groupedAlbums[0].albums as album (album.id)}
-        <AlbumTableRow {album} />
+        <AlbumTableRow {album} subAlbumCount={albumTree?.getChildren(album.id).length} />
       {/each}
     </tbody>
   {:else}
@@ -68,7 +71,7 @@
           transition:slide={{ duration: 300 }}
         >
           {#each albumGroup.albums as album (album.id)}
-            <AlbumTableRow {album} />
+            <AlbumTableRow {album} subAlbumCount={albumTree?.getChildren(album.id).length} />
           {/each}
         </tbody>
       {/if}

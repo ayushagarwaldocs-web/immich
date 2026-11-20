@@ -134,6 +134,22 @@ export const deleteAlbumMutation = (meta?: MutationMeta) =>
     meta: meta ?? { error: { toast: 'errors.unable_to_delete_album' } },
   });
 
+export const deleteAlbumsMutation = (meta?: MutationMeta) =>
+  mutationOptions({
+    mutationFn: async (ids: string[]) => {
+      for (const id of ids) {
+        await deleteAlbum({ id });
+        queryClient.removeQueries({ queryKey: QueryKeys.album({ id }) });
+      }
+    },
+    onSettled: () =>
+      Promise.all([
+        invalidateAlbums(),
+        queryClient.invalidateQueries({ queryKey: QueryKeys.sharedLinks(), exact: true }),
+      ]),
+    meta: meta ?? { error: { toast: 'errors.unable_to_delete_album' } },
+  });
+
 const notifyAddToAlbum = ($t: MessageFormatter, albumId: string, assetIds: string[], results: BulkIdResponseDto[]) => {
   const successCount = results.filter(({ success }) => success).length;
   const duplicateCount = results.filter(({ error }) => error === 'duplicate').length;

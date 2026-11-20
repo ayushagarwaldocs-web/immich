@@ -103,6 +103,10 @@ export class AlbumService extends BaseService {
   }
 
   async create(auth: AuthDto, dto: CreateAlbumDto): Promise<AlbumResponseDto> {
+    if (dto.parentId) {
+      await this.requireAccess({ auth, permission: Permission.AlbumDelete, ids: [dto.parentId] });
+    }
+
     const albumUsers = (dto.albumUsers || []).filter(({ userId }) => userId !== auth.user.id);
 
     for (const { userId } of albumUsers) {
@@ -128,6 +132,7 @@ export class AlbumService extends BaseService {
         description: dto.description,
         albumThumbnailAssetId: assetIds[0] || null,
         order: getPreferences(userMetadata).albums.defaultAssetOrder,
+        parentId: dto.parentId,
       },
       assetIds,
       [{ userId: auth.user.id, role: AlbumUserRole.Owner }, ...albumUsers],
@@ -147,6 +152,13 @@ export class AlbumService extends BaseService {
 
   async update(auth: AuthDto, id: string, dto: UpdateAlbumDto): Promise<AlbumResponseDto> {
     await this.requireAccess({ auth, permission: Permission.AlbumUpdate, ids: [id] });
+    if (dto.parentId !== undefined) {
+      await this.requireAccess({
+        auth,
+        permission: Permission.AlbumDelete,
+        ids: dto.parentId ? [id, dto.parentId] : [id],
+      });
+    }
 
     const album = await this.findOrFail(id, auth.user.id);
 
@@ -156,6 +168,19 @@ export class AlbumService extends BaseService {
         throw new BadRequestException('Invalid album thumbnail');
       }
     }
+
+    await using trx = await this.databaseRepository.transaction('read committed');
+    if (dto.parentId) {
+      await this.albumRepository.lockHierarchy(auth.user.id, trx);
+      const lineageIds = await this.albumRepository.getLineageIds(dto.parentId, trx);
+      if (lineageIds.length === 0) {
+        throw new BadRequestException('Parent album not found');
+      }
+      if (lineageIds.includes(id)) {
+        throw new BadRequestException('Cannot move an album into itself or one of its sub-albums');
+      }
+    }
+
     const updatedAlbum = await this.albumRepository.update(
       album.id,
       {
@@ -165,9 +190,12 @@ export class AlbumService extends BaseService {
         albumThumbnailAssetId: dto.albumThumbnailAssetId,
         isActivityEnabled: dto.isActivityEnabled,
         order: dto.order,
+        parentId: dto.parentId,
       },
       auth.user.id,
+      trx,
     );
+    await trx.commit();
     this.resourceRepository.send({ userIds: getUserIds(album), changed: [Resource.album({ id })] });
 
     return this.mapWithMetadata(updatedAlbum);
@@ -177,7 +205,12 @@ export class AlbumService extends BaseService {
     await this.requireAccess({ auth, permission: Permission.AlbumDelete, ids: [id] });
     const album = await this.findOrFail(id, auth.user.id);
 
-    await this.albumRepository.delete(id);
+    await using trx = await this.databaseRepository.transaction('read committed');
+    await this.albumRepository.lockHierarchy(auth.user.id, trx);
+    const children = await this.albumRepository.reparentChildren(id, trx);
+    await this.albumRepository.delete(id, trx);
+    await trx.commit();
+
     this.resourceRepository.send({
       userIds: getUserIds(album),
       changed: [Resource.albumStatistics()],
@@ -187,6 +220,12 @@ export class AlbumService extends BaseService {
       this.resourceRepository.send({
         userIds: [userId],
         deleted: sharedLinks.map((link) => Resource.sharedLink(link)),
+      });
+    }
+    for (const group of Map.groupBy(children, ({ userIds }) => userIds.toSorted().join(',')).values()) {
+      this.resourceRepository.send({
+        userIds: group[0].userIds,
+        changed: group.map((child) => Resource.album(child)),
       });
     }
   }

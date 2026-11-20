@@ -2,6 +2,8 @@
   import AlbumCardGroup from '#lib/components/album-page/AlbumCardGroup.svelte';
   import AlbumsTable from '#lib/components/album-page/AlbumsTable.svelte';
   import { authManager } from '#lib/managers/auth-manager.svelte.ts';
+  import { getAllAlbumsQuery } from '#lib/queries/album.query.ts';
+  import { createPreloadedQuery } from '#lib/queries/client.ts';
   import { handleDeleteAlbum, isAlbumOwner } from '#lib/services/album.service.ts';
   import {
     AlbumFilter,
@@ -12,6 +14,7 @@
     locale,
     type AlbumViewSettings,
   } from '#lib/stores/preferences.store.ts';
+  import { AlbumTree } from '#lib/utils/album-tree.ts';
   import {
     getSelectedAlbumGroupOption,
     sortAlbums,
@@ -118,6 +121,9 @@
     },
   };
 
+  const allAlbumsQuery = createPreloadedQuery(() => getAllAlbumsQuery());
+  const albumTree = $derived(new AlbumTree(allAlbumsQuery.data));
+
   let albums = $derived.by(() => {
     switch (userSettings.filter) {
       case AlbumFilter.Owned: {
@@ -132,6 +138,7 @@
       }
     }
   });
+  const topLevelAlbums = $derived(new AlbumTree(albums).getRoots());
   const normalizedSearchQuery = $derived(normalizeSearchString(searchQuery));
   let filteredAlbums = $derived(
     normalizedSearchQuery
@@ -140,7 +147,7 @@
             normalizeSearchString(albumName).includes(normalizedSearchQuery) ||
             normalizeSearchString(description).includes(normalizedSearchQuery),
         )
-      : albums,
+      : topLevelAlbums,
   );
 
   let albumGroupOption = $derived(getSelectedAlbumGroupOption(userSettings));
@@ -167,7 +174,9 @@
   });
 
   const removeAlbumsIfEmpty = async () => {
-    const albumsToRemove = ownedAlbums.filter((album) => album.assetCount === 0 && !album.albumName);
+    const albumsToRemove = ownedAlbums.filter(
+      (album) => album.assetCount === 0 && !album.albumName && albumTree.getChildren(album.id).length === 0,
+    );
     await Promise.allSettled(albumsToRemove.map((album) => handleDeleteAlbum(album, { prompt: false, notify: false })));
   };
 </script>
@@ -176,15 +185,22 @@
   {#if userSettings.view === AlbumViewMode.Cover}
     <!-- Album Cards -->
     {#if albumGroupOption === AlbumGroupBy.None}
-      <AlbumCardGroup albums={groupedAlbums[0].albums} {showOwner} showDateRange showItemCount />
+      <AlbumCardGroup albums={groupedAlbums[0].albums} {albumTree} {showOwner} showDateRange showItemCount />
     {:else}
       {#each groupedAlbums as albumGroup (albumGroup.id)}
-        <AlbumCardGroup albums={albumGroup.albums} group={albumGroup} {showOwner} showDateRange showItemCount />
+        <AlbumCardGroup
+          albums={albumGroup.albums}
+          {albumTree}
+          group={albumGroup}
+          {showOwner}
+          showDateRange
+          showItemCount
+        />
       {/each}
     {/if}
   {:else if userSettings.view === AlbumViewMode.List}
     <!-- Album Table -->
-    <AlbumsTable {groupedAlbums} {albumGroupOption} />
+    <AlbumsTable {groupedAlbums} {albumGroupOption} {albumTree} />
   {/if}
 {:else}
   <!-- Empty Message -->

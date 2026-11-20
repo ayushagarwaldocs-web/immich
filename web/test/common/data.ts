@@ -775,7 +775,11 @@ export class MockData {
   }
 
   createAlbum(dto: CreateAlbumDto) {
-    const album = factory.album({ albumName: dto.albumName, description: dto.description ?? '' });
+    const album = factory.album({
+      albumName: dto.albumName,
+      description: dto.description ?? '',
+      parentId: dto.parentId ?? null,
+    });
     this.addAlbums(album).addToAlbum(
       album.id,
       (dto.assetIds ?? []).map((id) => ({ id })),
@@ -792,6 +796,11 @@ export class MockData {
   }
 
   deleteAlbum(id: string) {
+    const parentId = this.albums.get(id)?.parentId ?? null;
+    const children = [...this.albums.values()].filter((album) => album.parentId === id);
+    for (const child of children) {
+      this.albums.set(child.id, { ...child, parentId });
+    }
     this.albums.delete(id);
     this.albumAssets.delete(id);
     return this;

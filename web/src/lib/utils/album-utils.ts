@@ -25,6 +25,11 @@ export const createAlbumAndRedirect = (name?: string, assetIds?: string[]) =>
     onSuccess: (album) => void goto(Route.viewAlbum(album)),
   });
 
+export const createSubAlbumAndRedirect = (parentId: string) =>
+  executeMutation(createAlbumMutation, [{ createAlbumDto: { albumName: '', parentId } }], {
+    onSuccess: (album) => void goto(Route.viewAlbum(album)),
+  });
+
 /**
 -------------
 Album Sorting
