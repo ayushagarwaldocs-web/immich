@@ -14,6 +14,7 @@
   </a>
 </p>
 <h3 align="center">High performance self-hosted photo and video management solution</h3>
+<p align="center"><strong>Folder-style nested albums for the web app</strong></p>
 <br/>
 <a href="https://immich.app">
 <img src="design/immich-screenshots.png" title="Main Screenshot">
@@ -53,8 +54,42 @@
 > [!NOTE]
 > You can find the main documentation, including installation guides, at https://immich.app/.
 
+> [!IMPORTANT]
+> This is an independent fork of [Immich](https://github.com/immich-app/immich), focused on folder-style nested albums. It is not an official Immich release or support channel.
+
+## Nested albums in this fork
+
+Build album trees that feel like familiar folders:
+
+```text
+Travel
+└── 2024
+    ├── Italy
+    └── Japan
+```
+
+- The Albums overview shows top-level albums, while search still finds albums anywhere in the tree.
+- Breadcrumbs, Back, and compact sub-album tiles make it easy to move through a hierarchy.
+- Owners can create a sub-album, use **Move to…**, or drag an album onto another album or breadcrumb on desktop.
+- Folder albums can borrow a cover from below them and show a folder badge.
+- Deleting a parent prompts for either deleting only that album and moving its direct sub-albums up, or deleting the selected branch from its deepest sub-albums upward. Photos and videos are never deleted by either option.
+- The API prevents an album from being moved into itself or one of its descendants.
+
+## Scope and installation
+
+Nested-album navigation and management are implemented in the web app. Existing mobile clients remain compatible and continue to show a flat album list.
+
+Use the [official Immich installation documentation](https://docs.immich.app/install/requirements) for prerequisites and deployment concepts. To use nested albums, build and deploy this branch, or an image built from it:
+
+```bash
+git clone --branch feat/nested-albums --single-branch https://github.com/ayushagarwaldocs-web/immich.git
+```
+
+For general Immich documentation, releases, and support, use the [upstream project](https://github.com/immich-app/immich).
+
 ## Links
 
+- [Nested albums](#nested-albums-in-this-fork)
 - [Documentation](https://docs.immich.app/)
 - [About](https://docs.immich.app/overview/introduction)
 - [Installation](https://docs.immich.app/install/requirements)
@@ -67,6 +102,9 @@
 ## Demo
 
 Access the demo [here](https://demo.immich.app). For the mobile app, you can use `https://demo.immich.app` for the `Server Endpoint URL`.
+
+> [!NOTE]
+> The official demo runs upstream Immich and does not include this fork's nested-album changes.
 
 ### Login credentials
 
@@ -85,6 +123,7 @@ Access the demo [here](https://demo.immich.app). For the mobile app, you can use
 | Download photos and videos to local device   | Yes    | Yes |
 | Multi-user support                           | Yes    | Yes |
 | Album and Shared albums                      | Yes    | Yes |
+| Folder-style nested albums                   | No     | Yes |
 | Scrubbable/draggable scrollbar               | Yes    | Yes |
 | Support raw formats                          | Yes    | Yes |
 | Metadata view (EXIF, map)                    | Yes    | Yes |
